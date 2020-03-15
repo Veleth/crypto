@@ -65,7 +65,6 @@ def test():
 #To make Monte Carlo tests
 def average(runs):
     import statistics
-    #Config
     accuracies = []
     lastWrongs = []
     for _ in range(runs):
