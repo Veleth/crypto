@@ -1,0 +1,16 @@
+PS C:\Program Files\Java\jdk-13.0.2\bin> .\keytool.exe -genkey -alias server-alias -keyalg RSA -keypass changeit -storepass changeit -keystore keystore.jks
+What is your first and last name?
+[Unknown]:
+What is the name of your organizational unit?
+[Unknown]:
+What is the name of your organization?
+[Unknown]:
+What is the name of your City or Locality?
+[Unknown]:
+What is the name of your State or Province?
+[Unknown]:
+What is the two-letter country code for this unit?
+[Unknown]:
+Is CN=Unknown, OU=Unknown, O=Unknown, L=Unknown, ST=Unknown, C=Unknown correct?
+[no]:  yes
+Generating 2 048 bit RSA key pair and self-signed certificate (SHA256withRSA) with a validity of 90 days for: CN=Unknown, OU=Unknown, O=Unknown, L=Unknown, ST=Unknown, C=Unknown
