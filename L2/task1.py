@@ -1,92 +1,125 @@
-import os
-import math
 import random
+import math
 import argparse
-from Crypto.Cipher import AES
 import jks
+from Crypto.Cipher import AES
+from Crypto.Util.Padding import pad, unpad
+from Crypto.Random import get_random_bytes
 
+encryptionModes = {
+    'CBC' : AES.MODE_CBC,
+    'CFB' : AES.MODE_CFB,
+    'OFB' : AES.MODE_OFB,
+    'CTR' : AES.MODE_CTR,
+    'EAX' : AES.MODE_EAX
+}
 
-#TODO: change to a class
-def encrypt(key, message, mode):
-    encryptionModes = {
-        'CBC' : AES.MODE_CBC,
-        'CFB' : AES.MODE_CFB,
-        'OFB' : AES.MODE_OFB,
-        'CTR' : AES.MODE_CTR,
-        'EAX' : AES.MODE_EAX
-    }
+class Oracle():
+    def __init__(self, keystore=None, keyIdentifier=None, keystorePass=None, mode='CBC', predictable=False, api=False):
+        if (None in [keystore, keyIdentifier, keystorePass == None]):
+            self.key = self.getDefaultKey()
+        else:
+            self.key = self.setKey(keystore, keyIdentifier, keystorePass)
 
-    if mode in ['CBC', 'CFB', 'OFB']:
-        # 16-byte IV
-        cipher = AES.new(key=key, mode=encryptionModes[mode], iv=getIV(16))
-        if mode == 'CBC':
-            # padding the message to nearest 16 bytes
-            message = message.zfill(math.ceil(len(message)/16)*16)
-    elif mode in ['CTR', 'EAX']:
-        # 15-byte nonce
-        cipher = AES.new(key=key, mode=encryptionModes[mode], nonce=getIV(15))
-    else:
-        raise Exception(f'Undefined behavior for mode: {mode}')
-    return cipher.encrypt(message.encode())
+        self.mode = encryptionModes[mode]
+        self.predictable = predictable
+        if self.predictable:
+            self.ivGenerator = self.getPredictableIV()
+        self.api = api
 
-def challenge(inputs, key=None, mode='CBC'):
-    if not key:
-        key = getDefaultKey()
-    if len(inputs) != 2:
-        print(f'Invalid number of arguments for challenge: {len(inputs)}')
-        exit(1)
-    else:
-        b = random.SystemRandom().randint(0,1)
-        return encrypt(key, inputs[b], mode), b
+    def getIV(self, length):
+        if not self.predictable:
+            self.iv = get_random_bytes(length)
+        else:
+            iv = next(self.ivGenerator)
+            self.iv = iv[-length:] #Trim leftmost bytes if needed
+        return self.iv
 
-def oracle(inputs, key=None, mode='CBC'):
-    if not key:
-        key = getDefaultKey()
-    encrypted = []
-    for message in inputs:
-        encrypted.append(encrypt(key, message, mode))
-    return encrypted
+    def getPredictableIV(self):
+        iv = get_random_bytes(AES.block_size)
+        i = int(iv.hex(), AES.block_size)
+        while True:
+            yield i.to_bytes(AES.block_size, 'big')
+            i += 1
 
-def getKey(path, identifier, password):
-    keystore = jks.KeyStore.load(path, password) #TODO: JKS or jceks required (try-except)
-    keyEntry = keystore.secret_keys[identifier] #TODO: try-except KeyError
-    key = keyEntry.key
-    return key
+    def encrypt(self, message, mode=None):
+        mode = mode or self.mode #Defaults to self.mode if mode is not set explicitly
+        
+        if self.key == None:
+            raise Exception(f'No encryption key!')
 
-# Default key path and name for CPA Experiment (the program is imported as dependency rather than ran from command line)
-def getDefaultKey():
-    keystore = jks.KeyStore.load('keystore.jks', 'changeit') #TODO: File not available try-except
-    keyEntry = keystore.secret_keys['crypto'] #TODO: try-except KeyError
-    key = keyEntry.key
-    return key
+        #These modes require a 16-byte IV
+        if mode in [AES.MODE_CBC, AES.MODE_CFB, AES.MODE_OFB]:
+            cipher = AES.new(key=self.key, mode=mode, iv=self.getIV(16))
+        #These modes require a nonce, 15 bytes is a value supported by both
+        elif mode in [AES.MODE_CTR, AES.MODE_EAX]:
+            cipher = AES.new(key=self.key, mode=mode, nonce=self.getIV(15))
+        else:
+            raise Exception(f'Undefined behavior for mode: {mode}')
+        
+        #Turn strings to bytes
+        if type(message) == str:
+            message = message.encode()
+        
+        #CBC mode requires padding, pkcs7 used by default
+        if mode == AES.MODE_CBC:
+            message = pad(message, AES.block_size)
+        
+        return (cipher.encrypt(message), cipher.iv)
 
-def getIV(length):
-    val = getWeakIV()
-    if len(val[-length:]) < length:
-        return val.zfill(length).encode()
-    return val[-length:].encode()
+    def challenge(self, inputs, mode=None):
+        if len(inputs) != 2:
+            raise Exception(f'Invalid number of arguments for challenge: {len(inputs)}')
+        else:
+            self.b = random.SystemRandom().randint(0,1)
+        
+        #If called from another module, b is accessible via the instance. For console mode return b for reference
+        if self.api:
+            return self.encrypt(inputs[self.b])
+        else:
+            return self.encrypt(inputs[self.b]), self.b
 
-def getStrongIV():
-    random.SystemRandom().randint(2**127,2**128)
+    def encryptionOracle(self, inputs, mode=None):
+        #INFO: by default the ciphertexts are encrypted independently
+        encrypted = []
+        for message in inputs:
+            encrypted.append(self.encrypt(message))
+        return encrypted
 
-def getWeakIV():
-    try:
-        iv = int(os.environ['CryptoWeakIV'])
-        os.environ['CryptoWeakIV'] = str(iv+1) #TODO: make more persistent
-    except KeyError:
-        iv = 1
-        os.environ['CryptoWeakIV'] = str(iv)
-    return str(iv)
+    def setKey(self, path, identifier, password):
+        try:
+            keystore = jks.KeyStore.load(path, password)
+            keyEntry = keystore.secret_keys[identifier] 
+            key = keyEntry.key
+            return key
+        except (jks.BadKeystoreFormatException, FileNotFoundError, KeyError) as e:
+            raise Exception(f'Error while retrieving the key: {e}')
 
-def execute(args, printRes=False):
-    key = getKey(args.keystore, args.identifier, args.keystorepass) 
-    inputs = args.inputs
-    mode = args.mode
-    result = args.action(inputs=inputs, key=key, mode=mode)
-    if printRes:
-        print(result)
-    else:
-        return result
+    # Default key path and name, used in the CPA experiment
+    def getDefaultKey(self):
+        try:
+            keystore = jks.KeyStore.load('keystore.jks', 'changeit')
+            keyEntry = keystore.secret_keys['crypto'] 
+            key = keyEntry.key
+            return key
+        except (jks.BadKeystoreFormatException, FileNotFoundError, KeyError) as e:
+            raise Exception(f'Error while retrieving default key: {e}')
+
+    def decrypt(self, ciphertexts, iv, mode=None):
+        mode = mode or self.mode
+        decrypted = []
+        if mode in [AES.MODE_CBC, AES.MODE_CFB, AES.MODE_OFB]:
+            cipher = AES.new(key=self.key, mode=mode, iv=iv)
+        elif mode in [AES.MODE_CTR, AES.MODE_EAX]:
+            cipher = AES.new(key=self.key, mode=mode, nonce=iv)
+        if not iv:
+            raise Exception(f'IV not provided')
+        for c in ciphertexts:            
+            plaintext = cipher.decrypt(bytearray.fromhex(c))
+            if mode == AES.MODE_CBC:
+                plaintext = unpad(plaintext, AES.block_size)
+            decrypted.append(plaintext.decode())
+        return decrypted
 
 
 if __name__ == "__main__":
@@ -106,12 +139,26 @@ if __name__ == "__main__":
                         help='Key identifier')
 
     parser.add_argument('--challenge', dest='action', action='store_const',
-                        const=challenge, default=oracle,
+                        const='challenge', default='oracle',
                         help='Challenge mode (default - encryption oracle)')
 
+    parser.add_argument('-d', '--decrypt', action='store_true',
+                        help='Decryption (overrides --challenge and oracle modes)')
+
+    parser.add_argument ('--iv', 
+                        help='Used for decryption (hex)')
+
     parser.add_argument('inputs', metavar='msgs', type=str, nargs='+',
-                        help='Messages to encrypt')
+                        help='Messages to encrypt (str)/decrypt (hex)')
 
     args = parser.parse_args()
 
-    execute(args, printRes=True)
+    oracle = Oracle(keystore=args.keystore, keyIdentifier=args.identifier, keystorePass=args.keystorepass, mode=args.mode)
+    if args.decrypt:
+        result = oracle.decrypt(ciphertexts=args.inputs, iv=bytes(bytearray.fromhex(args.iv)))
+    else:
+        if args.action == 'challenge':
+            result = oracle.challenge(inputs=args.inputs)
+        else: 
+            result = oracle.encryptionOracle(inputs=args.inputs)
+    print(result)
