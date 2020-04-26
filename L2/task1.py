@@ -65,7 +65,12 @@ class Oracle():
         if mode == AES.MODE_CBC:
             message = pad(message, AES.block_size)
         
-        return (cipher.encrypt(message), cipher.iv)
+        try:
+            cipherIV = cipher.IV
+        except AttributeError:
+            cipherIV = cipher.nonce
+
+        return (cipher.encrypt(message), cipherIV)
 
     def challenge(self, inputs, mode=None):
         if len(inputs) != 2:
